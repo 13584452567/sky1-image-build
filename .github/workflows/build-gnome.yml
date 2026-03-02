@@ -11,16 +11,19 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    container:
-      image: debian:sid
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Register qemu/binfmt for multiarch
+        uses: docker/setup-qemu-action@v2
+        with:
+          platforms: 'arm64'
+
       - name: Install dependencies
         run: |
-          apt-get update
-          apt-get install -y sudo live-build parted dosfstools qemu-utils xz-utils debootstrap qemu-user-static binfmt-support
+          sudo apt-get update
+          sudo apt-get install -y sudo live-build parted dosfstools qemu-utils xz-utils debootstrap qemu-user-static binfmt-support
 
       - name: Build GNOME Image
         run: |
