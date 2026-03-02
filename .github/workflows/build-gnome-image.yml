@@ -1,0 +1,50 @@
+name: Build GNOME disk image
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_compress:
+        description: 'true to skip xz compression (faster)'
+        required: false
+        default: 'false'
+      track:
+        description: 'Kernel track: main|latest|rc|next'
+        required: false
+        default: 'main'
+
+jobs:
+  build:
+    name: Build GNOME Image (debian-arm64 runner)
+    runs-on: [debian-arm64]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            live-build rsync xz-utils dosfstools e2fsprogs parted util-linux coreutils wget git ca-certificates
+
+      - name: Make build scripts executable
+        run: |
+          chmod +x scripts/*.sh
+
+      - name: Run GNOME disk image build
+        env:
+          SKIP_COMPRESS: ${{ github.event.inputs.skip_compress }}
+        run: |
+          # Ensure we run as root; scripts require root for image creation
+          if [ "$(id -u)" -ne 0 ]; then
+            exec sudo -E bash ./scripts/ci-build.sh gnome desktop image ${{ github.event.inputs.track }}
+          else
+            ./scripts/ci-build.sh gnome desktop image ${{ github.event.inputs.track }}
+          fi
+
+      - name: Upload built image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sky1-gnome-image
+          path: |
+            sky1-linux-gnome-desktop-*.img.xz
+            sky1-linux-gnome-desktop-*.img
