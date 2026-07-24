@@ -105,5 +105,7 @@ python3-pip
 python3-venv
 # uv - install via hook (not in Debian repos)
 
-# ===== Multimedia (Sky1 apt repo — HW-accelerated build) =====
-ffmpeg
+# Note: ffmpeg and other multimedia packages live in
+# desktop-common.list.chroot (@for: desktop). Headless server builds
+# don't need them, and the Sky1-repo ffmpeg currently has an
+# uninstallable libplacebo351 dependency in sid.
