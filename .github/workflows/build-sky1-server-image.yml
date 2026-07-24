@@ -5,10 +5,19 @@ name: Build Sky1 Headless Server Image
 # artifact.
 #
 # The build targets arm64 (auto/config sets --architecture arm64) and
-# uses live-build + root privileges (loop devices, parted, mkfs). We
-# run it on GitHub-hosted arm64 Ubuntu runners so debootstrap's
-# second-stage chroot exec works natively (no "Exec format error").
-# ubuntu-24.04-arm ships kernel 6.8, which sid's glibc accepts.
+# uses live-build + root privileges (loop devices, parted, mkfs).
+#
+# Two constraints drive the runner/container choice:
+#   1. live-build must be recent enough to recognize --bootloaders,
+#      --image-name and --debootstrap-options. Ubuntu's live-build is
+#      too old, so we run inside a debian:sid container.
+#   2. sid's glibc rejects kernels older than ~5.10 with
+#      "Exec format error" during debootstrap's second-stage chroot
+#      exec. ubuntu-24.04-arm ships kernel 6.8, which sid accepts, and
+#      is arm64-native so --architecture arm64 chroot exec works.
+#
+# `--privileged` is required for loop devices and partitioning inside
+# build-image.sh.
 #
 # See: https://docs.github.com/en/actions/reference/runners/github-hosted-runners
 
@@ -62,6 +71,9 @@ jobs:
   build:
     name: Build headless server disk image
     runs-on: ubuntu-24.04-arm
+    container:
+      image: debian:sid
+      options: --privileged
 
     steps:
       - name: Checkout
