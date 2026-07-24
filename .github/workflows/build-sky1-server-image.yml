@@ -4,10 +4,12 @@ name: Build Sky1 Headless Server Image
 # (./scripts/build.sh none server image) and publishes it as a workflow
 # artifact.
 #
-# The build needs Debian sid + live-build and root privileges (loop devices,
-# parted, mkfs). We run it inside a debian:sid container with
-# `--privileged` so losetup/partitions work, and let the workflow user
-# pick the kernel track via the `track` input.
+# The build targets arm64 and uses live-build + root privileges (loop
+# devices, parted, mkfs). We run it on the self-hosted debian-arm64
+# runner (kernel new enough for Debian sid's glibc), mirroring the
+# GNOME image workflow. The runner already has Debian tools and a
+# working losetup; `privileged` is needed inside the build for loop
+# devices and partitioning.
 
 on:
   workflow_dispatch:
@@ -58,14 +60,7 @@ env:
 jobs:
   build:
     name: Build headless server disk image
-    runs-on: ubuntu-22.04
-
-    # live-build needs Debian tools and a working losetup. debian:sid gives us
-    # an up-to-date live-build; `privileged` is required for loop devices and
-    # partitioning inside build-image.sh.
-    container:
-      image: debian:sid
-      options: --privileged
+    runs-on: [debian-arm64]
 
     steps:
       - name: Checkout
@@ -90,13 +85,13 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          apt-get update -qq
+          sudo apt-get update -qq
           # live-build: the core engine
           # debian-archive-keyring + sky1 key: APT trust
           # parted, dosfstools, e2fsprogs: image partitioning/formatting
           # xz-utils: image compression
           # rsync, sudo, gettext-base, jq, ca-certificates: build-script deps
-          apt-get install -y --no-install-recommends \
+          sudo apt-get install -y --no-install-recommends \
             live-build \
             debian-archive-keyring \
             parted \
@@ -122,6 +117,7 @@ jobs:
           echo "=== Build parameters ==="
           echo "Desktop: $DESKTOP"
           echo "Loadout: $LOADOUT"
+          echo "Format:  $FORMAT"
           echo "Track:   $TRACK"
           echo "Clean:   $CLEAN"
           echo ""
@@ -133,16 +129,12 @@ jobs:
             ARGS="$ARGS clean"
           fi
 
-          # The container runs as root, so no sudo needed. build.sh calls
-          # sudo internally for image builds — provide a passthrough.
-          cat > /usr/local/bin/sudo <<'SUDO'
-          #!/bin/bash
-          exec "$@"
-          SUDO
-          chmod +x /usr/local/bin/sudo
-
-          echo "=== Running: ./scripts/build.sh $ARGS ==="
-          ./scripts/build.sh $ARGS
+          # Ensure we run as root; scripts require root for image creation
+          if [ "$(id -u)" -ne 0 ]; then
+            exec sudo -E bash ./scripts/build.sh $ARGS
+          else
+            ./scripts/build.sh $ARGS
+          fi
 
           # Locate the produced image. Naming follows build-image.sh:
           #   sky1-linux-none-server[-<track>]-YYYYMMDD.img.xz
