@@ -156,15 +156,23 @@ jobs:
 
           # Locate the produced image. Naming follows build-image.sh:
           #   sky1-linux-none-server[-<track>]-YYYYMMDD.img.xz
-          shopt -s nullglob
-          artifacts=( sky1-linux-*.img.xz )
-          if [ ${#artifacts[@]} -eq 0 ]; then
-            echo "::error::No .img.xz artifact produced"
-            exit 1
+          #
+          # GitHub Actions runs `run: |` blocks with sh (dash on
+          # Debian), which lacks bash's `shopt -s nullglob` and
+          # arrays. Use POSIX-compatible glob handling instead.
+          artifact_path=""
+          for f in sky1-linux-*.img.xz; do
+              [ -e "$f" ] || continue
+              artifact_path="$f"
+              break
+          done
+          if [ -z "$artifact_path" ]; then
+              echo "::error::No .img.xz artifact produced"
+              exit 1
           fi
           echo "Produced artifacts:"
-          ls -lh "${artifacts[@]}"
-          echo "artifact_path=${artifacts[0]}" >> "$GITHUB_OUTPUT"
+          ls -lh "$artifact_path"
+          echo "artifact_path=$artifact_path" >> "$GITHUB_OUTPUT"
 
       - name: Generate build summary
         if: always()
