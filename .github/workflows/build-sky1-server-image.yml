@@ -1,0 +1,205 @@
+name: Build Sky1 Headless Server Image
+
+# Builds the CIX Sky1 headless server disk image
+# (./scripts/build.sh none server image) and publishes it as a workflow
+# artifact.
+#
+# The build needs Debian sid + live-build and root privileges (loop devices,
+# parted, mkfs). We run it inside a debian:sid container with
+# `--privileged` so losetup/partitions work, and let the workflow user
+# pick the kernel track via the `track` input.
+
+on:
+  workflow_dispatch:
+    inputs:
+      track:
+        description: "Kernel track"
+        type: choice
+        default: main
+        options:
+          - main
+          - latest
+          - rc
+          - next
+      clean:
+        description: "Force a clean rebuild (drop cached chroot)"
+        type: boolean
+        default: true
+  push:
+    branches:
+      - main
+    paths:
+      - "scripts/**"
+      - "config/**"
+      - "desktop-choice/**"
+      - "package-loadouts/**"
+      - ".github/workflows/build-sky1-server-image.yml"
+  pull_request:
+    paths:
+      - "scripts/**"
+      - "config/**"
+      - "desktop-choice/**"
+      - "package-loadouts/**"
+      - ".github/workflows/build-sky1-server-image.yml"
+
+# Cancel superseded runs on the same ref
+concurrency:
+  group: sky1-server-image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DESKTOP: none
+  LOADOUT: server
+  FORMAT: image
+  DEBIAN_FRONTEND: noninteractive
+  # Keep raw .img around too; xz happens inside the build script
+  SKIP_COMPRESS: "0"
+
+jobs:
+  build:
+    name: Build headless server disk image
+    runs-on: ubuntu-22.04
+
+    # live-build needs Debian tools and a working losetup. debian:sid gives us
+    # an up-to-date live-build; `privileged` is required for loop devices and
+    # partitioning inside build-image.sh.
+    container:
+      image: debian:sid
+      options: --privileged
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Build scripts do `git`-less work, but a full clone keeps
+          # debugging easier. Fetch-depth 1 is plenty.
+          fetch-depth: 1
+
+      - name: Resolve build parameters
+        id: params
+        run: |
+          # Manual runs use the dispatcher inputs; push/PR runs fall back to
+          # sensible defaults (main track, forced clean).
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "track=${{ inputs.track }}" >> "$GITHUB_OUTPUT"
+            echo "clean=${{ inputs.clean }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "track=main"        >> "$GITHUB_OUTPUT"
+            echo "clean=true"        >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install build dependencies
+        run: |
+          apt-get update -qq
+          # live-build: the core engine
+          # debian-archive-keyring + sky1 key: APT trust
+          # parted, dosfstools, e2fsprogs: image partitioning/formatting
+          # xz-utils: image compression
+          # rsync, sudo, gettext-base, jq, ca-certificates: build-script deps
+          apt-get install -y --no-install-recommends \
+            live-build \
+            debian-archive-keyring \
+            parted \
+            dosfstools \
+            e2fsprogs \
+            xz-utils \
+            rsync \
+            sudo \
+            gettext-base \
+            jq \
+            ca-certificates
+
+      - name: Make scripts executable
+        run: chmod +x scripts/*.sh scripts/sky1-provision 2>/dev/null || true
+
+      - name: Build headless server disk image
+        id: build
+        run: |
+          set -e
+          TRACK="${{ steps.params.outputs.track }}"
+          CLEAN="${{ steps.params.outputs.clean }}"
+
+          echo "=== Build parameters ==="
+          echo "Desktop: $DESKTOP"
+          echo "Loadout: $LOADOUT"
+          echo "Track:   $TRACK"
+          echo "Clean:   $CLEAN"
+          echo ""
+
+          # build.sh expects to be invoked with optional positional args:
+          #   <desktop> <loadout> <format> [track] [clean]
+          ARGS="$DESKTOP $LOADOUT $FORMAT $TRACK"
+          if [ "$CLEAN" = "true" ]; then
+            ARGS="$ARGS clean"
+          fi
+
+          # The container runs as root, so no sudo needed. build.sh calls
+          # sudo internally for image builds — provide a passthrough.
+          cat > /usr/local/bin/sudo <<'SUDO'
+          #!/bin/bash
+          exec "$@"
+          SUDO
+          chmod +x /usr/local/bin/sudo
+
+          echo "=== Running: ./scripts/build.sh $ARGS ==="
+          ./scripts/build.sh $ARGS
+
+          # Locate the produced image. Naming follows build-image.sh:
+          #   sky1-linux-none-server[-<track>]-YYYYMMDD.img.xz
+          shopt -s nullglob
+          artifacts=( sky1-linux-*.img.xz )
+          if [ ${#artifacts[@]} -eq 0 ]; then
+            echo "::error::No .img.xz artifact produced"
+            exit 1
+          fi
+          echo "Produced artifacts:"
+          ls -lh "${artifacts[@]}"
+          echo "artifact_path=${artifacts[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate build summary
+        if: always()
+        run: |
+          {
+            echo "## Sky1 Headless Server Image"
+            echo ""
+            echo "| Property | Value |"
+            echo "|----------|-------|"
+            echo "| Desktop  | ${{ env.DESKTOP }} |"
+            echo "| Loadout  | ${{ env.LOADOUT }} |"
+            echo "| Format   | ${{ env.FORMAT }} |"
+            echo "| Track    | ${{ steps.params.outputs.track }} |"
+            echo "| Clean    | ${{ steps.params.outputs.clean }} |"
+            echo "| Artifact | \`${{ steps.build.outputs.artifact_path }}\` |"
+            echo ""
+            if [ -f "${{ steps.build.outputs.artifact_path }}" ]; then
+              size=$(du -h "${{ steps.build.outputs.artifact_path }}" | cut -f1)
+              echo "Compressed size: **${size}**"
+            fi
+            echo ""
+            echo "### Write to storage"
+            echo '```bash'
+            echo "xzcat ${{ steps.build.outputs.artifact_path }} | sudo dd of=/dev/sdX bs=4M status=progress"
+            echo "sync"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload disk image artifact
+        if: success() && steps.build.outputs.artifact_path != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: sky1-linux-none-server-${{ steps.params.outputs.track }}-${{ github.run_id }}
+          path: ${{ steps.build.outputs.artifact_path }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0  # already xz-compressed; re-compressing wastes CPU
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sky1-build-log-${{ github.run_id }}
+          path: |
+            build.log
+            .build/
+          if-no-files-found: warn
+          retention-days: 7
