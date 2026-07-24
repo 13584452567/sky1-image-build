@@ -101,31 +101,102 @@ parted -s "$IMAGE_NAME" mkpart ESP fat32 1MiB ${EFI_SIZE}MiB
 parted -s "$IMAGE_NAME" set 1 esp on
 parted -s "$IMAGE_NAME" mkpart root ext4 ${EFI_SIZE}MiB 100%
 
+# Force the kernel to re-read the partition table we just wrote.
+# parted writes the GPT to the image file, but the kernel's view of
+# any attached loop device doesn't update automatically.
+partprobe "$IMAGE_NAME" 2>/dev/null || true
+
 # Step 3: Setup loop device
+#
+# Inside a container without a running udev daemon (e.g. debian:sid
+# under --privileged on GitHub runners), losetup --partscan attaches
+# the loop device and the kernel learns the partition layout, but
+# the /dev/loopXpN nodes are never created -- that's udev's job.
+#
+# Strategy, in order:
+#   1. losetup --partscan attaches the device with PARTSCAN flag set
+#   2. blockdev --rereadpt forces the kernel to scan the partition
+#      table again (sometimes needed after losetup)
+#   3. partx --add tells the kernel to add the partitions to its
+#      block-layer view (updates /proc/partitions)
+#   4. If the /dev nodes are still missing (no udev), mknod them
+#      manually. We walk /sys/class/block/<loopbase>/* to find the
+#      partition numbers and their major:minor, then create the
+#      matching /dev nodes.
 echo "[3/15] Setting up loop device..."
-# Use --partscan so the kernel creates partition sub-devices. In a
-# container without a running udev daemon, losetup --partscan alone
-# may not surface the /dev/loopXpN nodes; partx --add forces the
-# kernel to scan the partition table and emit them.
 LOOP=$(losetup --find --show --partscan "$IMAGE_NAME")
 EFI_PART="${LOOP}p1"
 ROOT_PART="${LOOP}p2"
 
-# If --partscan didn't materialize the nodes, ask partx explicitly.
+# Helper: ensure /dev/<loopbase>p<N> nodes exist, creating them via
+# mknod if the kernel knows about the partitions but udev hasn't
+# materialized the device nodes.
+ensure_loop_partition_nodes() {
+    local loop="$1" partno="$2" want="/dev/${1#/dev/}p${2}"
+    [ -b "$want" ] && return 0
+
+    # Already mapped by kpartx/device-mapper?
+    [ -b "/dev/mapper/${1#/dev/}p${2}" ] && return 0
+
+    local base="/sys/class/block/${1#/dev/}"
+    local partdir="$base/${1#/dev/}p${2}"
+
+    # Fall back to scanning /sys/class/block/<base>/<base>p<N>
+    if [ ! -d "$partdir" ]; then
+        local d
+        for d in "$base"/*; do
+            case "$(basename "$d")" in
+                "${1#/dev/}p${2}") partdir="$d"; break ;;
+            esac
+        done
+    fi
+
+    [ -d "$partdir" ] || return 1
+    [ -f "$partdir/dev" ] || return 1
+
+    local major_minor dev_major dev_minor
+    major_minor=$(cat "$partdir/dev" 2>/dev/null) || return 1
+    dev_major="${major_minor%%:*}"
+    dev_minor="${major_minor#*:}"
+
+    mknod "$want" b "$dev_major" "$dev_minor" 2>/dev/null || true
+    [ -b "$want" ]
+}
+
+# Try a sequence of tricks to get the partition nodes to appear.
 if [ ! -b "$EFI_PART" ] || [ ! -b "$ROOT_PART" ]; then
-    partx --add "$LOOP" 2>/dev/null || kpartx -a "$LOOP" 2>/dev/null || true
+    blockdev --rereadpt "$LOOP" 2>/dev/null || true
+fi
+if [ ! -b "$EFI_PART" ] || [ ! -b "$ROOT_PART" ]; then
+    partx --add "$LOOP" 2>/dev/null || true
 fi
 
-# Wait for partitions to appear (udev/partx can take a moment)
+# Final fallback: manually mknod the partition nodes from /sys info.
+if [ ! -b "$EFI_PART" ]; then
+    ensure_loop_partition_nodes "$LOOP" 1 || true
+fi
+if [ ! -b "$ROOT_PART" ]; then
+    ensure_loop_partition_nodes "$LOOP" 2 || true
+fi
+
+# Wait for partitions to appear (udev/partx/mknod can take a moment)
 for _ in 1 2 3 4 5 6 7 8 9 10; do
     [ -b "$EFI_PART" ] && [ -b "$ROOT_PART" ] && break
+    # Re-attempt mknod each iteration in case the kernel is slow to
+    # publish /sys entries.
+    ensure_loop_partition_nodes "$LOOP" 1 2>/dev/null || true
+    ensure_loop_partition_nodes "$LOOP" 2 2>/dev/null || true
     sleep 1
 done
+
 if [ ! -b "$EFI_PART" ] || [ ! -b "$ROOT_PART" ]; then
     echo "Error: Partition devices not found"
     echo "  Loop:    $LOOP"
     echo "  Expected: $EFI_PART and $ROOT_PART"
-    ls -l "${LOOP}"* 2>/dev/null || echo "  (no ${LOOP}* nodes)"
+    echo "  /sys/block/${LOOP#/dev/} contents:"
+    ls -l "/sys/class/block/${LOOP#/dev/}" 2>/dev/null | head -20
+    echo "  /proc/partitions:"
+    cat /proc/partitions 2>/dev/null | tail -10
     exit 1
 fi
 
