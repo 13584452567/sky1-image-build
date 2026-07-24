@@ -4,12 +4,13 @@ name: Build Sky1 Headless Server Image
 # (./scripts/build.sh none server image) and publishes it as a workflow
 # artifact.
 #
-# The build targets arm64 and uses live-build + root privileges (loop
-# devices, parted, mkfs). We run it on the self-hosted debian-arm64
-# runner (kernel new enough for Debian sid's glibc), mirroring the
-# GNOME image workflow. The runner already has Debian tools and a
-# working losetup; `privileged` is needed inside the build for loop
-# devices and partitioning.
+# The build targets arm64 (auto/config sets --architecture arm64) and
+# uses live-build + root privileges (loop devices, parted, mkfs). We
+# run it on GitHub-hosted arm64 Ubuntu runners so debootstrap's
+# second-stage chroot exec works natively (no "Exec format error").
+# ubuntu-24.04-arm ships kernel 6.8, which sid's glibc accepts.
+#
+# See: https://docs.github.com/en/actions/reference/runners/github-hosted-runners
 
 on:
   workflow_dispatch:
@@ -60,7 +61,7 @@ env:
 jobs:
   build:
     name: Build headless server disk image
-    runs-on: [debian-arm64]
+    runs-on: ubuntu-24.04-arm
 
     steps:
       - name: Checkout
