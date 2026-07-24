@@ -98,13 +98,14 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt-get update -qq
-          # live-build: the core engine
+          apt-get update -qq
+          # live-build: the core engine (sid's version recognizes
+          # --bootloaders, --image-name, --debootstrap-options)
           # debian-archive-keyring + sky1 key: APT trust
           # parted, dosfstools, e2fsprogs: image partitioning/formatting
           # xz-utils: image compression
           # rsync, sudo, gettext-base, jq, ca-certificates: build-script deps
-          sudo apt-get install -y --no-install-recommends \
+          apt-get install -y --no-install-recommends \
             live-build \
             debian-archive-keyring \
             parted \
