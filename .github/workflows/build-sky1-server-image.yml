@@ -116,7 +116,11 @@ jobs:
             sudo \
             gettext-base \
             jq \
-            ca-certificates
+            ca-certificates \
+            util-linux \
+            udev \
+            kpartx \
+            mount
 
       - name: Make scripts executable
         run: chmod +x scripts/*.sh scripts/sky1-provision 2>/dev/null || true

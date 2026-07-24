@@ -103,14 +103,29 @@ parted -s "$IMAGE_NAME" mkpart root ext4 ${EFI_SIZE}MiB 100%
 
 # Step 3: Setup loop device
 echo "[3/15] Setting up loop device..."
+# Use --partscan so the kernel creates partition sub-devices. In a
+# container without a running udev daemon, losetup --partscan alone
+# may not surface the /dev/loopXpN nodes; partx --add forces the
+# kernel to scan the partition table and emit them.
 LOOP=$(losetup --find --show --partscan "$IMAGE_NAME")
 EFI_PART="${LOOP}p1"
 ROOT_PART="${LOOP}p2"
 
-# Wait for partitions to appear
-sleep 1
+# If --partscan didn't materialize the nodes, ask partx explicitly.
+if [ ! -b "$EFI_PART" ] || [ ! -b "$ROOT_PART" ]; then
+    partx --add "$LOOP" 2>/dev/null || kpartx -a "$LOOP" 2>/dev/null || true
+fi
+
+# Wait for partitions to appear (udev/partx can take a moment)
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [ -b "$EFI_PART" ] && [ -b "$ROOT_PART" ] && break
+    sleep 1
+done
 if [ ! -b "$EFI_PART" ] || [ ! -b "$ROOT_PART" ]; then
     echo "Error: Partition devices not found"
+    echo "  Loop:    $LOOP"
+    echo "  Expected: $EFI_PART and $ROOT_PART"
+    ls -l "${LOOP}"* 2>/dev/null || echo "  (no ${LOOP}* nodes)"
     exit 1
 fi
 
